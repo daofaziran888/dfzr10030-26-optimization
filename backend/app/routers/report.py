@@ -1,4 +1,4 @@
-"""采集报告 分析看板接口：汇总指标、参数运行与结果导出。"""
+"""采集报告 分析看板接口：汇总指标、运行分析，并读取监控分析批次生成复核结果。"""
 from __future__ import annotations
 
 import csv
@@ -11,6 +11,7 @@ from fastapi.responses import StreamingResponse
 
 from app.schemas import ActionPayload, ActionResult, EntryPayload
 from app.services.report import ReportService
+from app.store import PersistError
 
 router = APIRouter(prefix="/api/report", tags=["采集报告"])
 service = ReportService()
@@ -23,6 +24,11 @@ def csv_cell(value: Any) -> str:
     if text and text[0] in "=+-@":
         text = "'" + text
     return '"' + text.replace('"', '""') + '"'
+
+
+def _fail_flag(values: dict[str, Any]) -> str | None:
+    flag = values.get("_fail_flag")
+    return str(flag) if flag else None
 
 
 @router.get("/summary")
@@ -43,6 +49,40 @@ def list_results() -> dict[str, Any]:
 def run_analysis(payload: EntryPayload) -> dict[str, Any]:
     results = service.run_analysis(payload.values)
     return {"items": results}
+
+
+# ----------------------------------------------------------------------
+# 跨模块入口：读取监控分析批次清单，按批次汇总成功率/平均延迟，生成待复核结果
+# ----------------------------------------------------------------------
+@router.get("/batch-reviews")
+def list_batch_reviews(panel: str | None = Query(default=None)) -> dict[str, Any]:
+    try:
+        items = service.list_batch_reviews(panel)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc).strip("'")) from exc
+    return {"items": items, "total": len(items)}
+
+
+@router.get("/batch-reviews/{batch_no}")
+def get_batch_review(batch_no: str) -> dict[str, Any]:
+    review = service.get_batch_review(batch_no)
+    if review is None:
+        raise HTTPException(status_code=404, detail=f"批次 {batch_no} 暂无复核结果")
+    return review
+
+
+@router.post("/batch-reviews")
+def summarize_batch(payload: EntryPayload) -> dict[str, Any]:
+    """按监控分析批次汇总并生成待复核结果；同批次重复提交只生效一次。"""
+    try:
+        outcome = service.summarize_batch(payload.values, fail_flag=_fail_flag(payload.values))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc).strip("'")) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except PersistError as exc:
+        raise HTTPException(status_code=500, detail=f"复核落库失败，事务已回滚：{exc}") from exc
+    return {"ok": True, **outcome}
 
 
 @router.get("/export")

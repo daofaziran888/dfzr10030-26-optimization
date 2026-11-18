@@ -74,5 +74,32 @@ npm run dev
 - 列表接口统一返回 `{ items, total, page, size }`，动作接口统一返回 `{ ok, message }`。
 - 状态流转只允许在 `app/services` 里改，路由层不做业务判断。
 
+## 监控分析分批执行
+
+采集监控不再在一次请求里展开全部样本，改为可持久化、可恢复的分析批次：
+
+- `POST /api/monitor/batches`：读取监控面板记录，冻结样本集合并生成监控指标快照，
+  按 `单批容量` 拆成分批（分组），返回监控分析批次清单；重复提交通过幂等键/活动批次
+  复用规则只生效一次。
+- `POST /api/monitor/batches/{批次编号}/execute|stop`：执行/停止/继续执行，已完成分组
+  不会重复计算，停止后续跑只处理未完成分组；`GET /api/monitor/batches/{批次编号}` 按
+  同一编号回查，监控页与报告页看到相同结果。
+- `POST /api/monitor/events`：新增采集事件。冲突策略 `freeze`（冻结当前样本集合，新
+  事件进入下一批次）或 `new_batch`（原批次保留已完成分组并停止，未处理分组转到使用
+  新样本集合的后继批次）；同一分析批次保证不混入两个样本版本。
+- 采集报告侧入口：`GET /api/report/batch-reviews` 读取监控分析批次清单，
+  `POST /api/report/batch-reviews` 按批次加权汇总成功率与平均延迟并生成“待复核”结果，
+  同批次重复提交复用同一份复核记录。
+- 所有写操作在 `Store.transaction` 快照事务内进行，落库失败（可用 `_fail_flag` 注入
+  模拟）整体回滚到原批次状态。
+
+后端验收脚本（无需额外依赖）：
+
+```bash
+cd backend
+.venv/bin/python -I tests/verify_batches.py   # 服务层 52 项分批/幂等/回滚/冲突/复核验收
+.venv/bin/python -I tests/verify_http.py      # 真实 uvicorn + HTTP 接口链路验收
+```
+
 领域：数据工程
 子方向：数据采集、爬虫与RPA

@@ -20,7 +20,9 @@ export default defineConfig({
     open: false,
     strictPort: false,
     proxy: {
-      '/api': {
+      // 仅代理真正的接口路径；不能用裸字符串 '/api'，否则 '/apiclient' 这类
+      // 前端路由也会按前缀命中代理被转发到后端，页面直接拿到 404 JSON。
+      '^/api($|/)': {
         target: proxyTarget,
         changeOrigin: true,
       },
